@@ -41,6 +41,34 @@ def payload_from_json(raw: str | None) -> dict | None:
         return None
 
 
+async def _send_to_user(
+    bot: Bot,
+    user_id: int,
+    payload: dict | None,
+    source_chat_id: int | None,
+    source_message_id: int | None,
+) -> None:
+    """Отправка с fallback: payload → copy_message."""
+    if payload is not None:
+        try:
+            await send_broadcast_payload(bot, user_id, payload)
+            return
+        except TelegramError as exc:
+            logger.warning(
+                "Payload-рассылка не удалась для %s (%s), пробуем copy_message",
+                user_id,
+                exc,
+            )
+    if source_chat_id is not None and source_message_id is not None:
+        await bot.copy_message(
+            chat_id=user_id,
+            from_chat_id=source_chat_id,
+            message_id=source_message_id,
+        )
+        return
+    raise TelegramError("Нет способа доставить рассылку этому пользователю")
+
+
 async def send_broadcast_payload(bot: Bot, user_id: int, payload: dict) -> None:
     """Отправляет одному пользователю контент рассылки с форматированием маркеров."""
     raw_text = payload.get("text") or ""
@@ -85,26 +113,23 @@ async def broadcast_message(
     source_chat_id: int | None = None,
     source_message_id: int | None = None,
     user_ids: list[int] | None = None,
-) -> tuple[int, int]:
+) -> tuple[int, int, list[int]]:
     """
     Рассылает сообщение подписчикам.
     Если передан payload — применяет format_admin_text к тексту/подписи.
-    Иначе fallback: copy_message (старые отложенные рассылки без payload).
+    При ошибке — fallback через copy_message.
     """
-    if payload is None and source_message is not None:
-        try:
-            payload = extract_broadcast_payload(source_message)
-        except ValueError:
-            payload = None
-            source_chat_id = source_message.chat_id
-            source_message_id = source_message.message_id
+    if source_message is not None:
+        source_chat_id = source_message.chat_id
+        source_message_id = source_message.message_id
+        if payload is None:
+            try:
+                payload = extract_broadcast_payload(source_message)
+            except ValueError:
+                payload = None
 
-    if payload is None:
-        if source_message is not None:
-            source_chat_id = source_message.chat_id
-            source_message_id = source_message.message_id
-        if source_chat_id is None or source_message_id is None:
-            raise ValueError("Нужен payload или source_message / chat_id+message_id")
+    if payload is None and (source_chat_id is None or source_message_id is None):
+        raise ValueError("Нужен payload или source_message / chat_id+message_id")
 
     if user_ids is None:
         from services.db import get_subscribed_users
@@ -112,24 +137,30 @@ async def broadcast_message(
 
     if not user_ids:
         logger.warning("Нет пользователей для рассылки.")
-        return 0, 0
+        return 0, 0, []
 
-    logger.info(f"Начинаю рассылку {len(user_ids)} пользователям...")
+    logger.info(
+        "Начинаю рассылку %s пользователям: %s (тип: %s)",
+        len(user_ids),
+        user_ids,
+        payload.get("type") if payload else "copy",
+    )
 
     success = 0
     failed = 0
+    delivered_to: list[int] = []
 
     for user_id in user_ids:
         try:
-            if payload is not None:
-                await send_broadcast_payload(bot, user_id, payload)
-            else:
-                await bot.copy_message(
-                    chat_id=user_id,
-                    from_chat_id=source_chat_id,
-                    message_id=source_message_id,
-                )
+            await _send_to_user(
+                bot,
+                user_id,
+                payload,
+                source_chat_id,
+                source_message_id,
+            )
             success += 1
+            delivered_to.append(user_id)
             if success % 10 == 0:
                 logger.info(f"Отправлено {success}/{len(user_ids)}")
         except TelegramError as e:
@@ -138,4 +169,4 @@ async def broadcast_message(
         await asyncio.sleep(SEND_DELAY)
 
     logger.info(f"Рассылка завершена: {success} успешно, {failed} ошибок.")
-    return success, failed
+    return success, failed, delivered_to

@@ -17,7 +17,7 @@ from services.db import (
 logger = logging.getLogger(__name__)
 
 MSK = ZoneInfo("Europe/Moscow")
-CHECK_INTERVAL_SEC = 30
+CHECK_INTERVAL_SEC = 10
 
 
 def parse_broadcast_schedule(text: str) -> datetime | str | None:
@@ -47,7 +47,11 @@ def parse_broadcast_schedule(text: str) -> datetime | str | None:
             microsecond=0,
         )
         if scheduled <= now:
-            scheduled += timedelta(days=1)
+            # Если ввели время «только что» — через минуту, иначе завтра
+            if (now - scheduled).total_seconds() < 120:
+                scheduled = now + timedelta(minutes=1)
+            else:
+                scheduled += timedelta(days=1)
         return scheduled
     except ValueError:
         return None
@@ -64,28 +68,40 @@ async def execute_scheduled_broadcast(bot: Bot, item: dict) -> None:
     broadcast_id = item["id"]
     try:
         payload = payload_from_json(item.get("payload"))
-        success, failed = await broadcast_message(
+        success, failed, delivered_to = await broadcast_message(
             bot,
             payload=payload,
             source_chat_id=item["admin_chat_id"],
             source_message_id=item["message_id"],
         )
-        mark_scheduled_broadcast_sent(broadcast_id, success, failed)
-        save_broadcast(message_text=f"[scheduled #{broadcast_id}]")
+        if success == 0:
+            mark_scheduled_broadcast_failed(
+                broadcast_id,
+                "Ни одному подписчику не доставлено",
+            )
+            report = (
+                f"Отложенная рассылка #{broadcast_id} не доставлена.\n\n"
+                f"Ошибок: {failed}\n"
+                f"Проверьте /stats и подписку тестового аккаунта (/follow)."
+            )
+        else:
+            mark_scheduled_broadcast_sent(broadcast_id, success, failed)
+            save_broadcast(message_text=f"[scheduled #{broadcast_id}]")
+            report = (
+                f"Отложенная рассылка #{broadcast_id} отправлена.\n\n"
+                f"Доставлено: {success}\n"
+                f"Ошибок: {failed}\n"
+                f"ID получателей: {', '.join(map(str, delivered_to))}"
+            )
         logger.info(
-            "Отложенная рассылка #%s выполнена: %s успешно, %s ошибок",
+            "Отложенная рассылка #%s: %s успешно, %s ошибок, получатели=%s",
             broadcast_id,
             success,
             failed,
+            delivered_to,
         )
         try:
-            await bot.send_message(
-                chat_id=item["created_by"],
-                text=(
-                    f"Отложенная рассылка #{broadcast_id} отправлена.\n\n"
-                    f"Доставлено: {success}\nОшибок: {failed}"
-                ),
-            )
+            await bot.send_message(chat_id=item["created_by"], text=report)
         except TelegramError:
             pass
     except Exception as exc:

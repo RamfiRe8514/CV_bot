@@ -149,7 +149,7 @@ async def broadcast_time_receive(update: Update, context: ContextTypes.DEFAULT_T
 
     if schedule == "now":
         status_msg = await update.message.reply_text("Рассылка запущена...")
-        success, failed = await broadcast_message(
+        success, failed, delivered_to = await broadcast_message(
             context.bot,
             payload=payload,
             source_chat_id=chat_id,
@@ -158,7 +158,10 @@ async def broadcast_time_receive(update: Update, context: ContextTypes.DEFAULT_T
         save_broadcast(message_text="[immediate broadcast]")
         try:
             await status_msg.edit_text(
-                f"Рассылка завершена!\n\nОтправлено: {success}\nОшибок: {failed}"
+                f"Рассылка завершена!\n\n"
+                f"Отправлено: {success}\n"
+                f"Ошибок: {failed}\n"
+                f"ID получателей: {', '.join(map(str, delivered_to)) or '—'}"
             )
         except Exception:
             pass

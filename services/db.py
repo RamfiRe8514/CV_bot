@@ -236,22 +236,28 @@ def claim_due_scheduled_broadcast() -> dict | None:
     """Атомарно забирает одну просроченную рассылку для отправки."""
     from datetime import datetime, timezone
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
     with db_cursor() as cur:
         cur.execute(
             """
-            SELECT id FROM scheduled_broadcasts
-            WHERE status = 'pending' AND scheduled_at <= ?
+            SELECT id, scheduled_at FROM scheduled_broadcasts
+            WHERE status = 'pending'
             ORDER BY scheduled_at
-            LIMIT 1
-            """,
-            (now,),
+            LIMIT 20
+            """
         )
-        row = cur.fetchone()
-        if not row:
+        due_id = None
+        for row in cur.fetchall():
+            scheduled = datetime.fromisoformat(row["scheduled_at"])
+            if scheduled.tzinfo is None:
+                scheduled = scheduled.replace(tzinfo=timezone.utc)
+            if scheduled <= now:
+                due_id = row["id"]
+                break
+        if due_id is None:
             return None
 
-        broadcast_id = row["id"]
+        broadcast_id = due_id
         cur.execute(
             """
             UPDATE scheduled_broadcasts
