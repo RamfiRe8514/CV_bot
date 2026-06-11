@@ -2,7 +2,7 @@ import logging
 import os
 from telegram import Update
 from telegram.ext import ContextTypes
-from services.db import get_broadcasts, toggle_subscription, is_user_subscribed
+from services.db import get_broadcasts, toggle_subscription, is_user_subscribed, upsert_user
 from services.content import format_admin_text
 from config import load_admins, DATA_DIR
 from keyboards.main_menu import get_main_menu_keyboard
@@ -21,6 +21,12 @@ WAITING_SUB_CONFIRMATION = 1
 async def subscription_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает состояние подписки."""
     user = update.effective_user
+    upsert_user(
+        user_id=user.id,
+        username=user.username or "",
+        first_name=user.first_name or "",
+        last_name=user.last_name or "",
+    )
     if is_rate_limited(user.id):
         await update.message.reply_text("Слишком много запросов. Подождите секунду.")
         return
@@ -55,7 +61,13 @@ async def subscription_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 async def follow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /follow для подписки на рассылку."""
     user = update.effective_user
-    
+    upsert_user(
+        user_id=user.id,
+        username=user.username or "",
+        first_name=user.first_name or "",
+        last_name=user.last_name or "",
+    )
+
     if is_user_subscribed(user.id):
         text, entities = format_admin_text("*Вы уже подписаны* на рассылку!")
         await update.message.reply_text(text, entities=entities)

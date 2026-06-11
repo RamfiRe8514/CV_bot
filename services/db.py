@@ -91,11 +91,15 @@ def upsert_user(user_id: int, username: str, first_name: str, last_name: str):
 
 
 def toggle_subscription(user_id: int, subscribe: bool):
-    """Подписывает или отписывает пользователя."""
+    """Подписывает или отписывает пользователя (создаёт запись, если её ещё нет)."""
     with db_cursor() as cur:
         cur.execute(
-            "UPDATE users SET subscribed = ? WHERE user_id = ?",
-            (1 if subscribe else 0, user_id)
+            """
+            INSERT INTO users (user_id, subscribed)
+            VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET subscribed = excluded.subscribed
+            """,
+            (user_id, 1 if subscribe else 0),
         )
 
 
