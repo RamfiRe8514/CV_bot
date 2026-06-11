@@ -13,6 +13,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters,
 )
+from telegram.request import HTTPXRequest
 
 import config
 from config import BOT_TOKEN, load_bot_name, DATA_DIR
@@ -73,8 +74,14 @@ def main():
     # Инициализируем БД
     init_db()
 
-    # Строим приложение
-    app = Application.builder().token(BOT_TOKEN).build()
+    # Увеличенные таймауты: PNG рун весят 3–7 MB, на Render загрузка в Telegram может занять время
+    request = HTTPXRequest(
+        connect_timeout=30.0,
+        read_timeout=30.0,
+        write_timeout=120.0,
+        pool_timeout=30.0,
+    )
+    app = Application.builder().token(BOT_TOKEN).request(request).build()
 
     # Команды
     app.add_handler(CommandHandler("start", start_handler))
