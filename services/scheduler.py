@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from telegram import Bot
 from telegram.error import TelegramError
 
-from services.broadcast import broadcast_message
+from services.broadcast import broadcast_message, payload_from_json
 from services.db import (
     claim_due_scheduled_broadcast,
     mark_scheduled_broadcast_failed,
@@ -63,8 +63,10 @@ async def execute_scheduled_broadcast(bot: Bot, item: dict) -> None:
     """Отправляет одну отложенную рассылку."""
     broadcast_id = item["id"]
     try:
+        payload = payload_from_json(item.get("payload"))
         success, failed = await broadcast_message(
             bot,
+            payload=payload,
             source_chat_id=item["admin_chat_id"],
             source_message_id=item["message_id"],
         )

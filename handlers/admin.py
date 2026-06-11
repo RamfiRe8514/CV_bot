@@ -3,7 +3,9 @@ import os
 from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters
 from services.db import get_stats
-from services.broadcast import broadcast_message
+import json
+
+from services.broadcast import broadcast_message, extract_broadcast_payload
 from services.content import load_practicums, save_practicums
 from config import load_admins, set_bot_name, get_bot_name, PRACTICUMS_FILE, ABOUT_US_FILE, ABOUT_US_ROOT
 
@@ -83,7 +85,9 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"Режим рассылки\n\n"
         f"Сообщение будет отправлено *всем {total} подписанным* пользователям.\n\n"
-        f"Отправьте контент: текст, фото, видео, аудио, голосовое или документ.\n"
+        f"Отправьте контент: текст, фото, видео, аудио, голосовое или документ.\n\n"
+        f"Форматирование: *жирный* _курсив_ =подчёркнутый= $зачёркнутый$ =*жирный+подчёркнутый*=\n"
+        f"Ссылки можно вставлять как есть.\n\n"
         f"Для отмены: /cancel",
         parse_mode="Markdown",
     )
@@ -99,6 +103,7 @@ async def broadcast_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["broadcast_chat_id"] = update.message.chat_id
     context.user_data["broadcast_message_id"] = update.message.message_id
+    context.user_data["broadcast_payload"] = extract_broadcast_payload(update.message)
 
     await update.message.reply_text(
         "Контент получен.\n\n"
@@ -127,7 +132,8 @@ async def broadcast_time_receive(update: Update, context: ContextTypes.DEFAULT_T
 
     chat_id = context.user_data.get("broadcast_chat_id")
     message_id = context.user_data.get("broadcast_message_id")
-    if not chat_id or not message_id:
+    payload = context.user_data.get("broadcast_payload")
+    if not chat_id or not message_id or not payload:
         await update.message.reply_text("Сессия рассылки истекла. Начните снова: /broadcast")
         return ConversationHandler.END
 
@@ -145,6 +151,7 @@ async def broadcast_time_receive(update: Update, context: ContextTypes.DEFAULT_T
         status_msg = await update.message.reply_text("Рассылка запущена...")
         success, failed = await broadcast_message(
             context.bot,
+            payload=payload,
             source_chat_id=chat_id,
             source_message_id=message_id,
         )
@@ -162,17 +169,18 @@ async def broadcast_time_receive(update: Update, context: ContextTypes.DEFAULT_T
             message_id=message_id,
             scheduled_at_utc=scheduled_utc,
             created_by=user_id,
+            payload=json.dumps(payload, ensure_ascii=False),
         )
         await update.message.reply_text(
             f"Рассылка #{broadcast_id} запланирована на "
             f"{format_schedule_msk(schedule)}.\n\n"
             f"Список отложенных: /scheduled\n"
-            f"Отмена: /cancelbroadcast {broadcast_id}\n\n"
-            f"Не удаляйте исходное сообщение в этом чате до отправки."
+            f"Отмена: /cancelbroadcast {broadcast_id}"
         )
 
     context.user_data.pop("broadcast_chat_id", None)
     context.user_data.pop("broadcast_message_id", None)
+    context.user_data.pop("broadcast_payload", None)
     return ConversationHandler.END
 
 
@@ -234,6 +242,7 @@ async def cancelbroadcast_handler(update: Update, context: ContextTypes.DEFAULT_
 async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("broadcast_chat_id", None)
     context.user_data.pop("broadcast_message_id", None)
+    context.user_data.pop("broadcast_payload", None)
     await update.message.reply_text("Рассылка отменена. Напишите /start для возврата в меню.")
     return ConversationHandler.END
 

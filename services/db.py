@@ -67,9 +67,14 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 sent_success INTEGER,
                 sent_failed INTEGER,
-                error_text TEXT
+                error_text TEXT,
+                payload TEXT
             )
         """)
+        try:
+            cur.execute("ALTER TABLE scheduled_broadcasts ADD COLUMN payload TEXT")
+        except sqlite3.OperationalError:
+            pass
     logger.info("База данных инициализирована.")
 
 
@@ -213,15 +218,16 @@ def create_scheduled_broadcast(
     message_id: int,
     scheduled_at_utc: str,
     created_by: int,
+    payload: str | None = None,
 ) -> int:
     with db_cursor() as cur:
         cur.execute(
             """
             INSERT INTO scheduled_broadcasts
-                (admin_chat_id, message_id, scheduled_at, created_by)
-            VALUES (?, ?, ?, ?)
+                (admin_chat_id, message_id, scheduled_at, created_by, payload)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (admin_chat_id, message_id, scheduled_at_utc, created_by),
+            (admin_chat_id, message_id, scheduled_at_utc, created_by, payload),
         )
         return cur.lastrowid
 
@@ -259,7 +265,7 @@ def claim_due_scheduled_broadcast() -> dict | None:
 
         cur.execute(
             """
-            SELECT id, admin_chat_id, message_id, scheduled_at, created_by
+            SELECT id, admin_chat_id, message_id, scheduled_at, created_by, payload
             FROM scheduled_broadcasts
             WHERE id = ?
             """,
