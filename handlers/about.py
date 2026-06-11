@@ -1,6 +1,7 @@
 import logging
 import os
 from telegram import Update
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 from config import get_about_text, get_bot_name, DATA_DIR, RUNES_FOLDER_DIR
 from services.content import load_practicums, PRAC_IMAGE_PATH
@@ -16,14 +17,20 @@ async def about_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text:
         text = "Информация о нас пока не добавлена."
 
-    # Применяем форматирование
     formatted_text = format_admin_text(text)
 
-    await update.message.reply_text(
-        formatted_text,
-        reply_markup=get_main_menu_keyboard(),
-        parse_mode="HTML"
-    )
+    try:
+        await update.message.reply_text(
+            formatted_text,
+            reply_markup=get_main_menu_keyboard(),
+            parse_mode="HTML",
+        )
+    except BadRequest:
+        logger.warning("HTML-разметка «О нас» некорректна, отправляем исходный текст")
+        await update.message.reply_text(
+            text,
+            reply_markup=get_main_menu_keyboard(),
+        )
 
 
 async def practicum_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -32,22 +39,21 @@ async def practicum_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     practicum_text = load_practicums()
 
     if practicum_text:
-        # Применяем форматирование
         formatted_text = format_admin_text(practicum_text)
-        
-        # Отправляем текст практикума с фото PRAC.jpg
-        if os.path.exists(PRAC_IMAGE_PATH):
-            with open(PRAC_IMAGE_PATH, "rb") as img:
-                await update.message.reply_photo(
-                    photo=img,
-                    caption=formatted_text,
-                    parse_mode="HTML"
-                )
-        else:
-            await update.message.reply_text(
-                formatted_text,
-                parse_mode="HTML"
-            )
+
+        try:
+            if os.path.exists(PRAC_IMAGE_PATH):
+                with open(PRAC_IMAGE_PATH, "rb") as img:
+                    await update.message.reply_photo(
+                        photo=img,
+                        caption=formatted_text,
+                        parse_mode="HTML",
+                    )
+            else:
+                await update.message.reply_text(formatted_text, parse_mode="HTML")
+        except BadRequest:
+            logger.warning("HTML-разметка практикумов некорректна, отправляем исходный текст")
+            await update.message.reply_text(practicum_text)
     else:
         await update.message.reply_text(
             "Практикумы пока не добавлены. Следите за обновлениями!"

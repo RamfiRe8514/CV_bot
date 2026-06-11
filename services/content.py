@@ -379,32 +379,55 @@ def save_practicums(text: str) -> None:
         f.write(text)
 
 
+_URL_PATTERN = re.compile(
+    r"https?://[^\s<>\"']+"
+    r"|"
+    r"(?:https?://)?t\.me/[^\s<>\"']+",
+    re.IGNORECASE,
+)
+
+
+def _protect_urls(text: str) -> tuple[str, list[str]]:
+    """Временно убирает ссылки, чтобы символы _, *, = в URL не ломали разметку."""
+    urls: list[str] = []
+
+    def repl(match: re.Match) -> str:
+        urls.append(match.group(0))
+        return f"\ue000{len(urls) - 1}\ue001"
+
+    return _URL_PATTERN.sub(repl, text), urls
+
+
+def _restore_urls(text: str, urls: list[str]) -> str:
+    for i, url in enumerate(urls):
+        text = text.replace(f"\ue000{i}\ue001", url)
+    return text
+
+
 def format_admin_text(text: str) -> str:
     """
-    Форматирует текст для админа по маркерам:
+    Форматирует текст по маркерам (безопасно для ссылок):
     *text* → жирный (HTML <b>)
     _text_ → курсив (HTML <i>)
-    =text= → подчеркнутый (HTML <u>)
-    $text$ → зачеркнутый (HTML <s>)
-    
-    Поддерживает комбинирование: =*text*= → жирный + подчеркнутый
+    =text= → подчёркнутый (HTML <u>)
+    $text$ → зачёркнутый (HTML <s>)
+    =*text*= → жирный + подчёркнутый
+
+    Ссылки (https://..., t.me/...) не затрагиваются маркерами форматирования.
     """
-    import re
-    
-    # Обработка комбинированных стилей с =* и *= (сначала!)
-    # =*text*= → <b><u>text</u></b>
-    text = re.sub(r'=\*(.+?)\*=', r'<b><u>\1</u></b>', text)
-    
-    # Обработка =text= (только подчеркнутый)
-    text = re.sub(r'=([^=<>]+)=', r'<u>\1</u>', text)
-    
-    # Обработка $text$ (зачеркнутый)
-    text = re.sub(r'\$([^\$<>]+)\$', r'<s>\1</s>', text)
-    
-    # Обработка *text* (жирный)
-    text = re.sub(r'\*([^\*<>]+)\*', r'<b>\1</b>', text)
-    
-    # Обработка _text_ (курсив)
-    text = re.sub(r'_([^_<>]+)_', r'<i>\1</i>', text)
-    
-    return text
+    import html
+
+    if not text:
+        return text
+
+    text, urls = _protect_urls(text)
+    text = html.escape(text, quote=False)
+
+    # Порядок важен: сначала комбинированные стили, потом одиночные
+    text = re.sub(r"=\*(.+?)\*=", r"<b><u>\1</u></b>", text, flags=re.DOTALL)
+    text = re.sub(r"=([^=*<>]+)=", r"<u>\1</u>", text)
+    text = re.sub(r"\$([^$<>]+)\$", r"<s>\1</s>", text)
+    text = re.sub(r"\*([^*<>]+)\*", r"<b>\1</b>", text)
+    text = re.sub(r"_([^_<>]+)_", r"<i>\1</i>", text)
+
+    return _restore_urls(text, urls)
