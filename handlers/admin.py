@@ -5,7 +5,7 @@ from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, Mess
 from services.db import get_stats
 from services.broadcast import broadcast_message
 from services.content import load_practicums, save_practicums
-from config import load_admins, set_bot_name, PRACTICUMS_FILE, ABOUT_US_FILE, ABOUT_US_ROOT
+from config import load_admins, set_bot_name, get_bot_name, PRACTICUMS_FILE, ABOUT_US_FILE, ABOUT_US_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +14,16 @@ WAITING_BROADCAST = 1
 WAITING_NEW_NAME = 2
 WAITING_PRACTICUMS = 3
 WAITING_ONAS_TEXT = 4
+WAITING_BROADCAST_TIME = 5
+
+BROADCAST_CONTENT_FILTER = (
+    filters.TEXT
+    | filters.PHOTO
+    | filters.VIDEO
+    | filters.AUDIO
+    | filters.VOICE
+    | filters.Document.ALL
+) & ~filters.COMMAND
 
 
 def admin_only(func):
@@ -72,49 +82,158 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total = len(get_subscribed_users())
     await update.message.reply_text(
         f"Режим рассылки\n\n"
-        f"Сообщение будет отправлено *всем {total} подписанным пользователям* бота.\n\n"
-        f"Отправьте сообщение (текст, фото, видео, документ).\n"
-        f"Для отмены введите /cancel",
-        parse_mode="Markdown"
+        f"Сообщение будет отправлено *всем {total} подписанным* пользователям.\n\n"
+        f"Отправьте контент: текст, фото, видео, аудио, голосовое или документ.\n"
+        f"Для отмены: /cancel",
+        parse_mode="Markdown",
     )
     return WAITING_BROADCAST
 
 
 async def broadcast_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Получает сообщение и запускает рассылку."""
+    """Сохраняет контент рассылки и спрашивает время отправки."""
     user_id = update.effective_user.id
     admins = load_admins()
     if user_id not in admins:
         return ConversationHandler.END
 
-    # Сохраняем сообщение для возможности удаления
-    context.user_data["last_broadcast_msg"] = update.message.message_id
+    context.user_data["broadcast_chat_id"] = update.message.chat_id
+    context.user_data["broadcast_message_id"] = update.message.message_id
 
-    status_msg = await update.message.reply_text("Рассылка запущена...")
+    await update.message.reply_text(
+        "Контент получен.\n\n"
+        "Когда отправить рассылку?\n"
+        "• `сейчас` — немедленно\n"
+        "• `ДД.ММ.ГГГГ ЧЧ:ММ` — например, 15.06.2026 20:30\n"
+        "• `ЧЧ:ММ` — сегодня (или завтра, если время уже прошло)\n\n"
+        "Время указывается по Москве (МСК).\n"
+        "Для отмены: /cancel",
+        parse_mode="Markdown",
+    )
+    return WAITING_BROADCAST_TIME
 
-    # Отправляем только подписанным пользователям
-    success, failed = await broadcast_message(context.bot, update.message)
 
-    # Сохраняем рассылку в БД
-    from services.db import save_broadcast
-    text = update.message.text or update.message.caption or ""
-    save_broadcast(message_text=text)
+async def broadcast_time_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет сразу или планирует отложенную рассылку."""
+    from datetime import timezone
 
-    try:
-        await status_msg.edit_text(
-            f"Рассылка завершена!\n\n"
-            f"Отправлено: {success}\n"
-            f"Ошибок: {failed}"
+    from services.db import create_scheduled_broadcast, save_broadcast
+    from services.scheduler import format_schedule_msk, parse_broadcast_schedule
+
+    user_id = update.effective_user.id
+    admins = load_admins()
+    if user_id not in admins:
+        return ConversationHandler.END
+
+    chat_id = context.user_data.get("broadcast_chat_id")
+    message_id = context.user_data.get("broadcast_message_id")
+    if not chat_id or not message_id:
+        await update.message.reply_text("Сессия рассылки истекла. Начните снова: /broadcast")
+        return ConversationHandler.END
+
+    schedule = parse_broadcast_schedule(update.message.text or "")
+    if schedule is None:
+        await update.message.reply_text(
+            "Не понял время. Примеры:\n"
+            "• сейчас\n"
+            "• 15.06.2026 20:30\n"
+            "• 20:30"
         )
-    except:
-        pass
-    
-    # ВАЖНО: явно завершаем conversation
+        return WAITING_BROADCAST_TIME
+
+    if schedule == "now":
+        status_msg = await update.message.reply_text("Рассылка запущена...")
+        success, failed = await broadcast_message(
+            context.bot,
+            source_chat_id=chat_id,
+            source_message_id=message_id,
+        )
+        save_broadcast(message_text="[immediate broadcast]")
+        try:
+            await status_msg.edit_text(
+                f"Рассылка завершена!\n\nОтправлено: {success}\nОшибок: {failed}"
+            )
+        except Exception:
+            pass
+    else:
+        scheduled_utc = schedule.astimezone(timezone.utc).isoformat()
+        broadcast_id = create_scheduled_broadcast(
+            admin_chat_id=chat_id,
+            message_id=message_id,
+            scheduled_at_utc=scheduled_utc,
+            created_by=user_id,
+        )
+        await update.message.reply_text(
+            f"Рассылка #{broadcast_id} запланирована на "
+            f"{format_schedule_msk(schedule)}.\n\n"
+            f"Список отложенных: /scheduled\n"
+            f"Отмена: /cancelbroadcast {broadcast_id}\n\n"
+            f"Не удаляйте исходное сообщение в этом чате до отправки."
+        )
+
+    context.user_data.pop("broadcast_chat_id", None)
+    context.user_data.pop("broadcast_message_id", None)
     return ConversationHandler.END
 
 
+async def scheduled_list_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/scheduled — список отложенных рассылок."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from services.db import get_pending_scheduled_broadcasts
+
+    user_id = update.effective_user.id
+    if user_id not in load_admins():
+        await update.message.reply_text("У вас нет доступа к этой команде.")
+        return
+
+    pending = get_pending_scheduled_broadcasts()
+    if not pending:
+        await update.message.reply_text("Отложенных рассылок нет.")
+        return
+
+    lines = ["Отложенные рассылки:\n"]
+    msk = ZoneInfo("Europe/Moscow")
+    for item in pending:
+        scheduled = datetime.fromisoformat(item["scheduled_at"]).astimezone(msk)
+        lines.append(
+            f"#{item['id']} — {scheduled.strftime('%d.%m.%Y %H:%M')} МСК"
+        )
+    lines.append("\nОтменить: /cancelbroadcast <номер>")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def cancelbroadcast_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/cancelbroadcast <id> — отмена отложенной рассылки."""
+    from services.db import cancel_scheduled_broadcast
+
+    user_id = update.effective_user.id
+    if user_id not in load_admins():
+        await update.message.reply_text("У вас нет доступа к этой команде.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Укажите номер: /cancelbroadcast 3")
+        return
+
+    try:
+        broadcast_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Номер должен быть числом.")
+        return
+
+    if cancel_scheduled_broadcast(broadcast_id):
+        await update.message.reply_text(f"Рассылка #{broadcast_id} отменена.")
+    else:
+        await update.message.reply_text(
+            f"Рассылку #{broadcast_id} не удалось отменить (не найдена или уже отправлена)."
+        )
+
+
 async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
+    context.user_data.pop("broadcast_chat_id", None)
+    context.user_data.pop("broadcast_message_id", None)
     await update.message.reply_text("Рассылка отменена. Напишите /start для возврата в меню.")
     return ConversationHandler.END
 
@@ -248,16 +367,16 @@ broadcast_conv_handler = ConversationHandler(
     entry_points=[CommandHandler("broadcast", broadcast_start)],
     states={
         WAITING_BROADCAST: [
-            MessageHandler(
-                (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL) & ~filters.COMMAND,
-                broadcast_receive
-            )
+            MessageHandler(BROADCAST_CONTENT_FILTER, broadcast_receive),
+        ],
+        WAITING_BROADCAST_TIME: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_time_receive),
         ],
     },
     fallbacks=[CommandHandler("cancel", broadcast_cancel)],
     per_user=True,
     per_chat=True,
-    conversation_timeout=60,  # 1 минута таймаут
+    conversation_timeout=300,
 )
 
 # ConversationHandler для /setname

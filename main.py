@@ -25,8 +25,10 @@ from handlers.about import about_handler, practicum_handler
 from handlers.subscription import subscription_handler, subscription_callback_handler, follow_handler
 from handlers.admin import (
     stats_handler, broadcast_conv_handler, setname_conv_handler, practicum_conv_handler,
-    onas_conv_handler, onas_start, onas_receive_text, onas_cancel
+    onas_conv_handler, onas_start, onas_receive_text, onas_cancel,
+    scheduled_list_handler, cancelbroadcast_handler,
 )
+from services.scheduler import broadcast_scheduler_loop
 from handlers.subscription import unfollow_handler, handle_yes_no
 
 
@@ -81,11 +83,24 @@ def main():
         write_timeout=120.0,
         pool_timeout=30.0,
     )
-    app = Application.builder().token(BOT_TOKEN).request(request).build()
+    async def post_init(application: Application) -> None:
+        import asyncio
+        asyncio.create_task(broadcast_scheduler_loop(application.bot))
+        logger.info("Фоновый планировщик рассылок подключён")
+
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .request(request)
+        .post_init(post_init)
+        .build()
+    )
 
     # Команды
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("stats", stats_handler))
+    app.add_handler(CommandHandler("scheduled", scheduled_list_handler))
+    app.add_handler(CommandHandler("cancelbroadcast", cancelbroadcast_handler))
     app.add_handler(CommandHandler("unfollow", unfollow_handler))
     app.add_handler(CommandHandler("follow", follow_handler))
     app.add_handler(CommandHandler("yes", handle_yes_no))
