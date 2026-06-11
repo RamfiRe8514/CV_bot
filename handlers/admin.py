@@ -4,7 +4,7 @@ from telegram import Update
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters
 from services.db import get_stats
 from services.broadcast import broadcast_message
-from services.content import load_practicums, save_practicums, format_admin_text
+from services.content import load_practicums, save_practicums
 from config import load_admins, set_bot_name, PRACTICUMS_FILE, ABOUT_US_FILE, ABOUT_US_ROOT
 
 logger = logging.getLogger(__name__)

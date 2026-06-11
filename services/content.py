@@ -2,6 +2,8 @@ import os
 import random
 import logging
 import re
+from telegram import MessageEntity
+from telegram.constants import MessageEntityType
 from config import (
     DAILY_TEXTS_FILE, DAILY_IMAGES_DIR, RUNES_IMAGES_DIR,
     RUNES_VALUES_FILE, PRACTICUMS_FILE,
@@ -382,52 +384,115 @@ def save_practicums(text: str) -> None:
 _URL_PATTERN = re.compile(
     r"https?://[^\s<>\"']+"
     r"|"
-    r"(?:https?://)?t\.me/[^\s<>\"']+",
+    r"(?:https?://)?t\.me/[^\s<>'\"]+",
     re.IGNORECASE,
 )
 
-
-def _protect_urls(text: str) -> tuple[str, list[str]]:
-    """Временно убирает ссылки, чтобы символы _, *, = в URL не ломали разметку."""
-    urls: list[str] = []
-
-    def repl(match: re.Match) -> str:
-        urls.append(match.group(0))
-        return f"\ue000{len(urls) - 1}\ue001"
-
-    return _URL_PATTERN.sub(repl, text), urls
+_FORMAT_RULES: list[tuple[re.Pattern, tuple[MessageEntityType, ...]]] = [
+    (re.compile(r"=\*(.+?)\*=", re.DOTALL), (MessageEntityType.BOLD, MessageEntityType.UNDERLINE)),
+    (re.compile(r"=([^=*]+)="), (MessageEntityType.UNDERLINE,)),
+    (re.compile(r"\$([^$]+)\$"), (MessageEntityType.STRIKETHROUGH,)),
+    (re.compile(r"\*([^*]+)\*"), (MessageEntityType.BOLD,)),
+    (re.compile(r"_([^_]+)_"), (MessageEntityType.ITALIC,)),
+]
 
 
-def _restore_urls(text: str, urls: list[str]) -> str:
-    for i, url in enumerate(urls):
-        text = text.replace(f"\ue000{i}\ue001", url)
-    return text
+def _utf16_len(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
 
 
-def format_admin_text(text: str) -> str:
+def _format_text_segment(segment: str) -> tuple[str, list[MessageEntity]]:
+    """Применяет маркеры форматирования к фрагменту без ссылок."""
+    if not segment:
+        return "", []
+
+    occupied = bytearray(len(segment))
+    matches: list[tuple[int, int, int, int, tuple[MessageEntityType, ...]]] = []
+
+    for pattern, types in _FORMAT_RULES:
+        for match in pattern.finditer(segment):
+            if any(occupied[match.start():match.end()]):
+                continue
+            for i in range(match.start(), match.end()):
+                occupied[i] = 1
+            matches.append(
+                (match.start(), match.end(), match.start(1), match.end(1), types)
+            )
+
+    matches.sort(key=lambda item: item[0])
+
+    plain_parts: list[str] = []
+    entities: list[MessageEntity] = []
+    last = 0
+
+    for start, end, inner_start, inner_end, types in matches:
+        plain_parts.append(segment[last:start])
+        plain_offset = _utf16_len("".join(plain_parts))
+        inner = segment[inner_start:inner_end]
+        plain_parts.append(inner)
+        length = _utf16_len(inner)
+        for entity_type in types:
+            entities.append(
+                MessageEntity(type=entity_type, offset=plain_offset, length=length)
+            )
+        last = end
+
+    plain_parts.append(segment[last:])
+    return "".join(plain_parts), entities
+
+
+def format_admin_text(text: str) -> tuple[str, list[MessageEntity]]:
     """
-    Форматирует текст по маркерам (безопасно для ссылок):
-    *text* → жирный (HTML <b>)
-    _text_ → курсив (HTML <i>)
-    =text= → подчёркнутый (HTML <u>)
-    $text$ → зачёркнутый (HTML <s>)
+    Форматирует текст по маркерам через MessageEntity (надёжнее HTML в Telegram):
+    *text* → жирный
+    _text_ → курсив
+    =text= → подчёркнутый
+    $text$ → зачёркнутый
     =*text*= → жирный + подчёркнутый
 
     Ссылки (https://..., t.me/...) не затрагиваются маркерами форматирования.
     """
-    import html
-
     if not text:
-        return text
+        return "", []
 
-    text, urls = _protect_urls(text)
-    text = html.escape(text, quote=False)
+    segments: list[tuple[str, str]] = []
+    last = 0
+    for match in _URL_PATTERN.finditer(text):
+        if match.start() > last:
+            segments.append(("text", text[last:match.start()]))
+        segments.append(("url", match.group(0)))
+        last = match.end()
+    if last < len(text):
+        segments.append(("text", text[last:]))
+    if not segments:
+        segments = [("text", text)]
 
-    # Порядок важен: сначала комбинированные стили, потом одиночные
-    text = re.sub(r"=\*(.+?)\*=", r"<b><u>\1</u></b>", text, flags=re.DOTALL)
-    text = re.sub(r"=([^=*<>]+)=", r"<u>\1</u>", text)
-    text = re.sub(r"\$([^$<>]+)\$", r"<s>\1</s>", text)
-    text = re.sub(r"\*([^*<>]+)\*", r"<b>\1</b>", text)
-    text = re.sub(r"_([^_<>]+)_", r"<i>\1</i>", text)
+    plain_parts: list[str] = []
+    entities: list[MessageEntity] = []
 
-    return _restore_urls(text, urls)
+    for kind, content in segments:
+        if kind == "text":
+            segment_plain, segment_entities = _format_text_segment(content)
+            base_offset = _utf16_len("".join(plain_parts))
+            plain_parts.append(segment_plain)
+            for entity in segment_entities:
+                entities.append(
+                    MessageEntity(
+                        type=entity.type,
+                        offset=entity.offset + base_offset,
+                        length=entity.length,
+                    )
+                )
+        else:
+            base_offset = _utf16_len("".join(plain_parts))
+            plain_parts.append(content)
+            entities.append(
+                MessageEntity(
+                    type=MessageEntityType.TEXT_LINK,
+                    offset=base_offset,
+                    length=_utf16_len(content),
+                    url=content,
+                )
+            )
+
+    return "".join(plain_parts), entities

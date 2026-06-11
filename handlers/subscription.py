@@ -38,17 +38,18 @@ async def subscription_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         keyboard = [[InlineKeyboardButton("Отписаться", callback_data="unsub")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        text, entities = format_admin_text("*Рассылка активна!* _Чтобы отписаться_, нажмите кнопку ниже.")
         await update.message.reply_text(
-            format_admin_text("*Рассылка активна!* _Чтобы отписаться_, нажмите кнопку ниже."),
+            text,
+            entities=entities,
             reply_markup=reply_markup,
-            parse_mode="HTML"
         )
     else:
         # Пользователь отписан - предлагаем подписаться
-        await update.message.reply_text(
-            format_admin_text("_Рассылка отключена._\n\nЧтобы подписаться на рассылку, используйте команду /follow"),
-            parse_mode="HTML"
+        text, entities = format_admin_text(
+            "_Рассылка отключена._\n\nЧтобы подписаться на рассылку, используйте команду /follow"
         )
+        await update.message.reply_text(text, entities=entities)
 
 
 async def follow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -56,19 +57,15 @@ async def follow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
     if is_user_subscribed(user.id):
-        await update.message.reply_text(
-            format_admin_text("*Вы уже подписаны* на рассылку!"),
-            parse_mode="HTML"
-        )
+        text, entities = format_admin_text("*Вы уже подписаны* на рассылку!")
+        await update.message.reply_text(text, entities=entities)
         return
     
     # Подписываем пользователя
     toggle_subscription(user.id, True)
     
-    await update.message.reply_text(
-        format_admin_text("_Рассылка активна!_ Чтобы отписаться напишите /unfollow"),
-        parse_mode="HTML"
-    )
+    text, entities = format_admin_text("_Рассылка активна!_ Чтобы отписаться напишите /unfollow")
+    await update.message.reply_text(text, entities=entities)
 
 
 async def subscription_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -87,28 +84,26 @@ async def subscription_callback_handler(update: Update, context: ContextTypes.DE
     
     if subscribed:
         # Показываем картинку с вопросом
+        confirm_text, confirm_entities = format_admin_text("*Вы уверены?* /yes /no")
         if os.path.exists(UNSUB_IMAGE_PATH):
             with open(UNSUB_IMAGE_PATH, "rb") as img:
                 await query.message.reply_photo(
                     photo=img,
-                    caption=format_admin_text("*Вы уверены?* /yes /no"),
-                    parse_mode="HTML"
+                    caption=confirm_text,
+                    caption_entities=confirm_entities,
                 )
         else:
-            await query.message.reply_text(
-                format_admin_text("*Вы уверены?* /yes /no"),
-                parse_mode="HTML"
-            )
+            await query.message.reply_text(confirm_text, entities=confirm_entities)
         
         # Удаляем сообщение с кнопкой
         await query.message.delete()
         # Сохраняем состояние
         context.user_data["awaiting_unsub_confirmation"] = True
     else:
-        await query.edit_message_text(
-            format_admin_text("_Рассылка отключена._\n\nЧтобы подписаться, используйте команду /follow"),
-            parse_mode="HTML"
+        text, entities = format_admin_text(
+            "_Рассылка отключена._\n\nЧтобы подписаться, используйте команду /follow"
         )
+        await query.edit_message_text(text, entities=entities)
 
 
 async def unfollow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -116,27 +111,25 @@ async def unfollow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
     if is_user_subscribed(user.id):
-        # Пользователь подписан - показываем картинку с вопросом
+        confirm_text, confirm_entities = format_admin_text("*Вы уверены?* /yes /no")
         if os.path.exists(UNSUB_IMAGE_PATH):
             with open(UNSUB_IMAGE_PATH, "rb") as img:
                 await update.message.reply_photo(
                     photo=img,
-                    caption=format_admin_text("*Вы уверены?* /yes /no"),
-                    parse_mode="HTML"
+                    caption=confirm_text,
+                    caption_entities=confirm_entities,
                 )
         else:
-            await update.message.reply_text(
-                format_admin_text("*Вы уверены?* /yes /no"),
-                parse_mode="HTML"
-            )
+            await update.message.reply_text(confirm_text, entities=confirm_entities)
         
         # Сохраняем состояние
         context.user_data["awaiting_unsub_confirmation"] = True
     else:
+        text, entities = format_admin_text("_Вы не подписаны_ на рассылку.")
         await update.message.reply_text(
-            format_admin_text("_Вы не подписаны_ на рассылку."),
+            text,
+            entities=entities,
             reply_markup=get_main_menu_keyboard(),
-            parse_mode="HTML"
         )
 
 
@@ -150,22 +143,25 @@ async def handle_yes_no(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if command == "/yes":
             toggle_subscription(user.id, False)
             context.user_data["awaiting_unsub_confirmation"] = False
+            text, entities = format_admin_text("*Вы отписаны* от рассылки.")
             await update.message.reply_text(
-                format_admin_text("*Вы отписаны* от рассылки."),
+                text,
+                entities=entities,
                 reply_markup=get_main_menu_keyboard(),
-                parse_mode="HTML"
             )
         elif command == "/no":
             context.user_data["awaiting_unsub_confirmation"] = False
+            text, entities = format_admin_text("_Рассылка активна!_")
             await update.message.reply_text(
-                format_admin_text("_Рассылка активна!_"),
+                text,
+                entities=entities,
                 reply_markup=get_main_menu_keyboard(),
-                parse_mode="HTML"
             )
     else:
         # Если пользователь ввел /yes или /no не в контексте отписки
+        text, entities = format_admin_text("Используйте команду /unfollow для отписки от рассылки.")
         await update.message.reply_text(
-            format_admin_text("Используйте команду /unfollow для отписки от рассылки."),
+            text,
+            entities=entities,
             reply_markup=get_main_menu_keyboard(),
-            parse_mode="HTML"
         )
